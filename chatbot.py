@@ -23,6 +23,7 @@ class PrologFamilyBot:
         # parent comes from father or mother
         self.prolog.assertz("parent(X,Y) :- father(X,Y)")
         self.prolog.assertz("parent(X,Y) :- mother(X,Y)")
+        self.prolog.assertz("sibling(X,Y) :- parent(P,X), parent(P,Y), X \\= Y")
 
         # ancestor and grandparent inference
         self.prolog.assertz("ancestor(X,Y) :- parent(X,Y)")
@@ -30,11 +31,12 @@ class PrologFamilyBot:
         self.prolog.assertz("grandparent(X,Y) :- parent(X,Z), parent(Z,Y)")
         self.prolog.assertz("grandfather(X,Y) :- grandparent(X,Y), male(X)")
         self.prolog.assertz("grandmother(X,Y) :- grandparent(X,Y), female(X)")
+        self.prolog.assertz("sibling(X,Y) :- parent(P,X), parent(P,Y), X \\= Y")
 
         # gender from direct father/mother facts
         self.prolog.assertz("male(X) :- father(X,_)")
         self.prolog.assertz("female(X) :- mother(X,_)")
-
+        
 
     def _assert_parent(self, parent_atom, child_atom):
         if parent_atom == child_atom:
@@ -54,6 +56,24 @@ class PrologFamilyBot:
 
     def handle_statement(self, text):
         text = text.strip().rstrip('.')
+        # New pattern: "A and B are the parents of C"
+        m = re.match(r"^([A-Z][a-z]*) and ([A-Z][a-z]*) are the parents of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b, c = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            c_p = norm(c)
+            # check reflexive/cycle for each parent
+            if a_p == c_p or b_p == c_p:
+                return "Impossible: someone cannot be their own parent."
+            if list(self.prolog.query(f"ancestor({c_p},{a_p})")) or list(self.prolog.query(f"ancestor({c_p},{b_p})")):
+                return "Impossible: this would create a cycle."
+            # assert both parents
+            self.prolog.assertz(f"parent({a_p},{c_p})")
+            self.prolog.assertz(f"parent({b_p},{c_p})")
+            return "OK! Learned parents relation."
+
+        # existing father/mother cases...
         m = re.match(r"^([A-Z][a-z]*) is the father of ([A-Z][a-z]*)$", text)
         if m:
             a, b = m.groups()
@@ -65,9 +85,7 @@ class PrologFamilyBot:
             ok2, err2 = self._assert_parent(a_p, b_p)
             if not ok2:
                 return err2
-            # assert father so male(X) and father(X,Y) hold
-            # for father statement
-            self.prolog.assertz(f"father({a_p},{b_p})")  # this also makes parent(a_p,b_p) true via rule
+            self.prolog.assertz(f"father({a_p},{b_p})")
             return "OK! Learned father relation."
 
         m = re.match(r"^([A-Z][a-z]*) is the mother of ([A-Z][a-z]*)$", text)
@@ -81,11 +99,50 @@ class PrologFamilyBot:
             ok2, err2 = self._assert_parent(a_p, b_p)
             if not ok2:
                 return err2
-            # for mother statement
             self.prolog.assertz(f"mother({a_p},{b_p})")
             return "OK! Learned mother relation."
+        
+        # "A is the mother of B and C."
+        m = re.match(r"^([A-Z][a-z]*) is the mother of ([A-Z][a-z]*) and ([A-Z][a-z]*)$", text)
+        if m:
+            mom, child1, child2 = m.groups()
+            mom_p = norm(mom)
+            c1_p = norm(child1)
+            c2_p = norm(child2)
+            ok, err = self._enforce_gender(mom_p, 'female')
+            if not ok:
+                return err
+            # add both mother relationships (which imply parent)
+            # you can reuse _assert_parent to check cycles/reflexive if desired
+            ok1, err1 = self._assert_parent(mom_p, c1_p)
+            if not ok1:
+                return err1
+            self.prolog.assertz(f"mother({mom_p},{c1_p})")
+            ok2, err2 = self._assert_parent(mom_p, c2_p)
+            if not ok2:
+                return err2
+            self.prolog.assertz(f"mother({mom_p},{c2_p})")
+            return "OK! Learned mother of both."
+
+        # "A and B are siblings." only allowed if they share a known parent
+        m = re.match(r"^([A-Z][a-z]*) and ([A-Z][a-z]*) are siblings$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            if a_p == b_p:
+                return "Impossible: someone cannot be sibling of themselves."
+            # check for existing common parent
+            sols = list(self.prolog.query(f"parent(P,{a_p}), parent(P,{b_p})"))
+            if sols:
+                return "OK! They are siblings."  # already entailed
+            else:
+                return ("Impossible: cannot declare them siblings without a shared parent. "
+                        "First give a parent, e.g., 'A is the mother of B and C.'")
+
 
         return "I don't understand that statement."
+
 
     def handle_question(self, text):
         text = text.strip().rstrip('?')
@@ -116,6 +173,39 @@ class PrologFamilyBot:
             a_p = norm(a)
             b_p = norm(b)
             return "Yes." if list(self.prolog.query(f"grandmother({a_p},{b_p})")) else "No."
+
+        # e.g., "Who are the parents of C?"
+        m = re.match(r"^Who are the parents of ([A-Z][a-z]*)$", text)
+        if m:
+            (child,) = m.groups()
+            child_p = norm(child)
+            sols = list(self.prolog.query(f"parent(X,{child_p})"))
+            if not sols:
+                return f"No parents of {child} found."
+            parents = sorted({sol['X'] for sol in sols})
+            # capitalize for display
+            parents_display = ", ".join(p.capitalize() for p in parents)
+            return f"Parents of {child}: {parents_display}."
+
+        # Are A and B siblings?
+        m = re.match(r"^Are ([A-Z][a-z]*) and ([A-Z][a-z]*) siblings$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            return "Yes." if list(self.prolog.query(f"sibling({a_p},{b_p})")) else "No."
+
+        # Who are the siblings of X?
+        m = re.match(r"^Who are the siblings of ([A-Z][a-z]*)$", text)
+        if m:
+            (person,) = m.groups()
+            p = norm(person)
+            sols = list(self.prolog.query(f"sibling(X,{p})"))
+            if not sols:
+                return f"No siblings of {person} found."
+            siblings = sorted({sol['X'] for sol in sols})
+            sib_display = ", ".join(s.capitalize() for s in siblings)
+            return f"Siblings of {person}: {sib_display}."
 
         return "I don't understand that question."
 
