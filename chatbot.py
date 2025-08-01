@@ -24,6 +24,8 @@ class PrologFamilyBot:
         self.prolog.assertz("parent(X,Y) :- father(X,Y)")
         self.prolog.assertz("parent(X,Y) :- mother(X,Y)")
         self.prolog.assertz("sibling(X,Y) :- parent(P,X), parent(P,Y), X \\= Y")
+        self.prolog.assertz("uncle(X,Y) :- parent(P,Y), sibling(X,P), male(X)")
+        self.prolog.assertz("aunt(X,Y) :- parent(P,Y), sibling(X,P), female(X)")
 
         # ancestor and grandparent inference
         self.prolog.assertz("ancestor(X,Y) :- parent(X,Y)")
@@ -170,6 +172,39 @@ class PrologFamilyBot:
                 return ("Impossible: cannot declare sister if no shared parent is known. "
                         "First provide a parent for both.")
             return "OK! Learned sister relation."
+        # "A is an uncle of B."
+        m = re.match(r"^([A-Z][a-z]*) is an uncle of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            ok, err = self._enforce_gender(a_p, 'male')
+            if not ok:
+                return err
+            # verify logical plausibility: there exists P parent of B such that sibling(a,P)
+            sols = list(self.prolog.query(f"parent(P,{norm(b)}), sibling({a_p},P)"))
+            if not sols:
+                return ("Impossible: to declare uncle, the person must be a sibling of a parent. "
+                        "Ensure the parent and sibling relationships exist.")
+            # now assert the explicit uncle fact so future questions succeed
+            self.prolog.assertz(f"uncle({a_p},{norm(b)})")
+            return "OK! Learned uncle relation."
+
+
+        # "A is an aunt of B."
+        m = re.match(r"^([A-Z][a-z]*) is an aunt of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            ok, err = self._enforce_gender(a_p, 'female')
+            if not ok:
+                return err
+            sols = list(self.prolog.query(f"parent(P,{norm(b)}), sibling({a_p},P)"))
+            if not sols:
+                return ("Impossible: to declare aunt, the person must be a sibling of a parent. "
+                        "Ensure the parent and sibling relationships exist.")
+            return "OK! Learned aunt relation."
 
         return "I don't understand that statement."
 
@@ -213,7 +248,6 @@ class PrologFamilyBot:
             if not sols:
                 return f"No parents of {child} found."
             parents = sorted({sol['X'] for sol in sols})
-            # capitalize for display
             parents_display = ", ".join(p.capitalize() for p in parents)
             return f"Parents of {child}: {parents_display}."
 
@@ -243,7 +277,6 @@ class PrologFamilyBot:
             a, b = m.groups()
             a_p = norm(a)
             b_p = norm(b)
-            # need shared parent and male
             sibling_check = list(self.prolog.query(f"parent(P,{a_p}), parent(P,{b_p})"))
             is_male = self.gender.get(a_p) == 'male' or bool(list(self.prolog.query(f"male({a_p})")))
             return "Yes." if sibling_check and is_male else "No."
@@ -279,7 +312,7 @@ class PrologFamilyBot:
         if m:
             (person,) = m.groups()
             p = norm(person)
-            sols = list(self.prolog.query(f"parent(P,{p}),a parent(P,X), X \\= {p}"))
+            sols = list(self.prolog.query(f"parent(P,{p}), parent(P,X), X \\= {p}"))
             sisters = []
             for sol in sols:
                 candidate = sol['X']
@@ -290,7 +323,63 @@ class PrologFamilyBot:
                 return f"No sisters of {person} found."
             return f"Sisters of {person}: " + ", ".join(s.capitalize() for s in sorted(set(sisters))) + "."
 
+        # Is A an uncle of B?
+        m = re.match(r"^Is ([A-Z][a-z]*) an uncle of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            # structural check
+            structural = bool(list(self.prolog.query(f"parent(P,{norm(b)}), sibling({a_p},P)")))
+            if not structural:
+                return "No."
+            known = self.gender.get(a_p)
+            if known == 'female':
+                return "No."
+            if known == 'male':
+                return "Yes."
+            return "Probably."
+
+        # Is A an aunt of B?
+        m = re.match(r"^Is ([A-Z][a-z]*) an aunt of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            structural = bool(list(self.prolog.query(f"parent(P,{norm(b)}), sibling({a_p},P)")))
+            if not structural:
+                return "No."
+            known = self.gender.get(a_p)
+            if known == 'male':
+                return "No."
+            if known == 'female':
+                return "Yes."
+            return "Probably."
+
+        # Who are the uncles of X?
+        m = re.match(r"^Who are the uncles of ([A-Z][a-z]*)$", text)
+        if m:
+            (person,) = m.groups()
+            p = norm(person)
+            sols = list(self.prolog.query(f"uncle(X,{p})"))
+            if not sols:
+                return f"No uncles of {person} found."
+            uncles = sorted({sol['X'] for sol in sols})
+            return f"Uncles of {person}: " + ", ".join(u.capitalize() for u in uncles) + "."
+
+        # Who are the aunts of X?
+        m = re.match(r"^Who are the aunts of ([A-Z][a-z]*)$", text)
+        if m:
+            (person,) = m.groups()
+            p = norm(person)
+            sols = list(self.prolog.query(f"aunt(X,{p})"))
+            if not sols:
+                return f"No aunts of {person} found."
+            aunts = sorted({sol['X'] for sol in sols})
+            return f"Aunts of {person}: " + ", ".join(a.capitalize() for a in aunts) + "."
+
         return "I don't understand that question."
+
 
     def handle_input(self, line):
         line = line.strip()
