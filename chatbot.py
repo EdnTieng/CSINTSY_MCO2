@@ -139,6 +139,7 @@ class PrologFamilyBot:
             else:
                 return ("Impossible: cannot declare them siblings without a shared parent. "
                         "First give a parent, e.g., 'A is the mother of B and C.'")
+                        
         # "A is a brother of B."
         m = re.match(r"^([A-Z][a-z]*) is a brother of ([A-Z][a-z]*)$", text)
         if m:
@@ -180,7 +181,6 @@ class PrologFamilyBot:
             ok, err = self._assert_parent(b_p, a_p)
             if not ok:
                 return err
-            self.prolog.assertz(f"parent({b_p},{a_p})")
             
             return "OK! Learned child relation."
             
@@ -196,7 +196,6 @@ class PrologFamilyBot:
             ok2, err2 = self._assert_parent(b_p, a_p)
             if not ok2:
                 return err2
-            self.prolog.assertz(f"parent({b_p,a_p})")
             
             return "OK! Learned son relation."
         
@@ -212,9 +211,44 @@ class PrologFamilyBot:
             ok2, err2 = self._assert_parent(b_p, a_p)
             if not ok2:
                 return err2
-            self.prolog.assertz(f"parent({b_p,a_p})")
             
             return "OK! Learned daughter relation."
+            
+        # "A is a grandmother of B."
+        m = re.match(r"^([A-Z][a-z]*) is a grandmother of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            ok, err = self._enforce_gender(a_p, 'female')
+            if not ok:
+                return err
+            if a_p == b_p:
+                return "Impossible: someone cannot be their own parent."
+            if list(self.prolog.query(f"ancestor({b_p},{a_p})")):
+                return "Impossible: this would create a cycle."
+            self.prolog.assertz(f"grandmother({a_p},{b_p})")
+            self.prolog.assertz(f"ancestor({a_p},{b_p})")
+            
+            return "OK! Learned grandmother relation."
+            
+        # "A is a grandfather of B."
+        m = re.match(r"^([A-Z][a-z]*) is a grandfather of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            ok, err = self._enforce_gender(a_p, 'male')
+            if not ok:
+                return err
+            if a_p == b_p:
+                return "Impossible: someone cannot be their own parent."
+            if list(self.prolog.query(f"ancestor({b_p},{a_p})")):
+                return "Impossible: this would create a cycle."
+            self.prolog.assertz(f"grandmother({a_p},{b_p})")
+            self.prolog.assertz(f"ancestor({a_p},{b_p})")
+            
+            return "OK! Learned grandfather relation."
         
         return "I don't understand that statement."
 
