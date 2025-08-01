@@ -170,7 +170,52 @@ class PrologFamilyBot:
                 return ("Impossible: cannot declare sister if no shared parent is known. "
                         "First provide a parent for both.")
             return "OK! Learned sister relation."
-
+        
+        # "A is a child of B. "         
+        m = re.match(r"^([A-Z][a-z]*) is a child of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            ok, err = self._assert_parent(b_p, a_p)
+            if not ok:
+                return err
+            self.prolog.assertz(f"parent({b_p},{a_p})")
+            
+            return "OK! Learned child relation."
+            
+        # "A is a son of B."
+        m = re.match(r"^([A-Z][a-z]*) is a son of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            ok, err = self._enforce_gender(a_p, 'male')
+            if not ok:
+                return err
+            ok2, err2 = self._assert_parent(b_p, a_p)
+            if not ok2:
+                return err2
+            self.prolog.assertz(f"parent({b_p,a_p})")
+            
+            return "OK! Learned son relation."
+        
+        # "A is a daughter of B."
+        m = re.match(r"^([A-Z][a-z]*) is a daughter of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            ok, err = self._enforce_gender(a_p, 'female')
+            if not ok:
+                return err
+            ok2, err2 = self._assert_parent(b_p, a_p)
+            if not ok2:
+                return err2
+            self.prolog.assertz(f"parent({b_p,a_p})")
+            
+            return "OK! Learned daughter relation."
+        
         return "I don't understand that statement."
 
 
@@ -289,7 +334,7 @@ class PrologFamilyBot:
             if not sisters:
                 return f"No sisters of {person} found."
             return f"Sisters of {person}: " + ", ".join(s.capitalize() for s in sorted(set(sisters))) + "."
-
+            
         return "I don't understand that question."
 
     def handle_input(self, line):
