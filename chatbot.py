@@ -139,7 +139,37 @@ class PrologFamilyBot:
             else:
                 return ("Impossible: cannot declare them siblings without a shared parent. "
                         "First give a parent, e.g., 'A is the mother of B and C.'")
+        # "A is a brother of B."
+        m = re.match(r"^([A-Z][a-z]*) is a brother of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            # enforce male
+            ok, err = self._enforce_gender(a_p, 'male')
+            if not ok:
+                return err
+            # check they share a parent
+            common = list(self.prolog.query(f"parent(P,{a_p}), parent(P,{b_p})"))
+            if not common:
+                return ("Impossible: cannot declare brother if no shared parent is known. "
+                        "First provide a parent for both.")
+            return "OK! Learned brother relation."  # siblinghood already implied
 
+        # "A is a sister of B."
+        m = re.match(r"^([A-Z][a-z]*) is a sister of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            ok, err = self._enforce_gender(a_p, 'female')
+            if not ok:
+                return err
+            common = list(self.prolog.query(f"parent(P,{a_p}), parent(P,{b_p})"))
+            if not common:
+                return ("Impossible: cannot declare sister if no shared parent is known. "
+                        "First provide a parent for both.")
+            return "OK! Learned sister relation."
 
         return "I don't understand that statement."
 
@@ -206,6 +236,59 @@ class PrologFamilyBot:
             siblings = sorted({sol['X'] for sol in sols})
             sib_display = ", ".join(s.capitalize() for s in siblings)
             return f"Siblings of {person}: {sib_display}."
+
+        # Is A a brother of B?
+        m = re.match(r"^Is ([A-Z][a-z]*) a brother of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            # need shared parent and male
+            sibling_check = list(self.prolog.query(f"parent(P,{a_p}), parent(P,{b_p})"))
+            is_male = self.gender.get(a_p) == 'male' or bool(list(self.prolog.query(f"male({a_p})")))
+            return "Yes." if sibling_check and is_male else "No."
+
+        # Is A a sister of B?
+        m = re.match(r"^Is ([A-Z][a-z]*) a sister of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            sibling_check = list(self.prolog.query(f"parent(P,{a_p}), parent(P,{b_p})"))
+            is_female = self.gender.get(a_p) == 'female' or bool(list(self.prolog.query(f"female({a_p})")))
+            return "Yes." if sibling_check and is_female else "No."
+
+        # Who are the brothers of X?
+        m = re.match(r"^Who are the brothers of ([A-Z][a-z]*)$", text)
+        if m:
+            (person,) = m.groups()
+            p = norm(person)
+            sols = list(self.prolog.query(f"parent(P,{p}), parent(P,X), X \\= {p}"))
+            brothers = []
+            for sol in sols:
+                candidate = sol['X']
+                if (self.gender.get(candidate) == 'male' or bool(list(self.prolog.query(f"male({candidate})")))) \
+                and any(list(self.prolog.query(f"parent(P,{candidate}), parent(P,{p})"))):
+                    brothers.append(candidate)
+            if not brothers:
+                return f"No brothers of {person} found."
+            return f"Brothers of {person}: " + ", ".join(b.capitalize() for b in sorted(set(brothers))) + "."
+
+        # Who are the sisters of X?
+        m = re.match(r"^Who are the sisters of ([A-Z][a-z]*)$", text)
+        if m:
+            (person,) = m.groups()
+            p = norm(person)
+            sols = list(self.prolog.query(f"parent(P,{p}),a parent(P,X), X \\= {p}"))
+            sisters = []
+            for sol in sols:
+                candidate = sol['X']
+                if (self.gender.get(candidate) == 'female' or bool(list(self.prolog.query(f"female({candidate})")))) \
+                and any(list(self.prolog.query(f"parent(P,{candidate}), parent(P,{p})"))):
+                    sisters.append(candidate)
+            if not sisters:
+                return f"No sisters of {person} found."
+            return f"Sisters of {person}: " + ", ".join(s.capitalize() for s in sorted(set(sisters))) + "."
 
         return "I don't understand that question."
 
