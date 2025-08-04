@@ -19,7 +19,7 @@ class PrologFamilyBot:
         list(self.prolog.query("dynamic grandfather/2."))
         list(self.prolog.query("dynamic grandmother/2."))
         list(self.prolog.query("dynamic ancestor/2."))
-
+        
         # parent comes from father or mother
         self.prolog.assertz("parent(X,Y) :- father(X,Y)")
         self.prolog.assertz("parent(X,Y) :- mother(X,Y)")
@@ -34,6 +34,17 @@ class PrologFamilyBot:
         self.prolog.assertz("grandfather(X,Y) :- grandparent(X,Y), male(X)")
         self.prolog.assertz("grandmother(X,Y) :- grandparent(X,Y), female(X)")
         self.prolog.assertz("sibling(X,Y) :- parent(P,X), parent(P,Y), X \\= Y")
+
+        # relative inference
+        self.prolog.assertz("relative(X,Y) :- ancestor(X,Y)")
+        self.prolog.assertz("relative(X,Y) :- ancestor(Y,X)")
+        self.prolog.assertz("relative(X,Y) :- parent(P,X), parent(P,Y), X \\= Y")
+        self.prolog.assertz("relative(X,Y) :- ancestor(A,X), ancestor(A,Y), X \\= Y")
+
+        #children inference
+        self.prolog.assertz("child(X,Y) :- parent(Y,X)")
+        self.prolog.assertz("daughter(X,Y) :- parent(Y,X), female(X)")
+        self.prolog.assertz("son(X,Y) :- parent(Y,X), male(X)")
 
         # gender from direct father/mother facts
         self.prolog.assertz("male(X) :- father(X,_)")
@@ -126,6 +137,52 @@ class PrologFamilyBot:
             self.prolog.assertz(f"mother({mom_p},{c2_p})")
             return "OK! Learned mother of both."
 
+        # "A is a child of B."
+        m = re.match(r"^([A-Z][a-z]*) is a child of ([A-Z][a-z]*)$", text)
+        if m:
+            child, parent = m.groups()
+            child_p = norm(child)
+            parent_p = norm(parent)
+            # basic reflexive/cycle check
+            if child_p == parent_p:
+                return "Impossible: someone cannot be their own parent/child."
+            if list(self.prolog.query(f"ancestor({child_p},{parent_p})")):
+                return "Impossible: this would create a cycle."
+            self.prolog.assertz(f"parent({parent_p},{child_p})")
+            return "OK! Learned child relation."
+
+        # "A is a daughter of B."
+        m = re.match(r"^([A-Z][a-z]*) is a daughter of ([A-Z][a-z]*)$", text)
+        if m:
+            daughter, parent = m.groups()
+            d_p = norm(daughter)
+            p_p = norm(parent)
+            ok, err = self._enforce_gender(d_p, 'female')
+            if not ok:
+                return err
+            if d_p == p_p:
+                return "Impossible: someone cannot be their own parent/child."
+            if list(self.prolog.query(f"ancestor({d_p},{p_p})")):
+                return "Impossible: this would create a cycle."
+            self.prolog.assertz(f"parent({p_p},{d_p})")
+            return "OK! Learned daughter relation."
+
+        # "A is a son of B."
+        m = re.match(r"^([A-Z][a-z]*) is a son of ([A-Z][a-z]*)$", text)
+        if m:
+            son, parent = m.groups()
+            s_p = norm(son)
+            p_p = norm(parent)
+            ok, err = self._enforce_gender(s_p, 'male')
+            if not ok:
+                return err
+            if s_p == p_p:
+                return "Impossible: someone cannot be their own parent/child."
+            if list(self.prolog.query(f"ancestor({s_p},{p_p})")):
+                return "Impossible: this would create a cycle."
+            self.prolog.assertz(f"parent({p_p},{s_p})")
+            return "OK! Learned son relation."
+
         # "A and B are siblings." only allowed if they share a known parent
         m = re.match(r"^([A-Z][a-z]*) and ([A-Z][a-z]*) are siblings$", text)
         if m:
@@ -206,6 +263,41 @@ class PrologFamilyBot:
                         "Ensure the parent and sibling relationships exist.")
             return "OK! Learned aunt relation."
 
+        # "A is the grandfather of B."
+        m = re.match(r"^([A-Z][a-z]*) is a grandfather of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            # enforce male
+            ok, err = self._enforce_gender(a_p, 'male')
+            if not ok:
+                return err
+            # require existing intermediate Z with parent(a,Z) and parent(Z,b)
+            sols = list(self.prolog.query(f"parent({a_p},Z), parent(Z,{b_p})"))
+            if not sols:
+                return ("Impossible: cannot declare grandfather without the intermediate generation. "
+                        "First supply something like 'A is the father of P.' and 'P is the parent of B.'")
+            # record explicit fact so future queries succeed
+            self.prolog.assertz(f"grandfather({a_p},{b_p})")
+            return "OK! Learned grandfather relation."
+
+        # "A is the grandmother of B."
+        m = re.match(r"^([A-Z][a-z]*) is a grandmother of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            ok, err = self._enforce_gender(a_p, 'female')
+            if not ok:
+                return err
+            sols = list(self.prolog.query(f"parent({a_p},Z), parent(Z,{b_p})"))
+            if not sols:
+                return ("Impossible: cannot declare grandmother without the intermediate generation. "
+                        "First supply something like 'A is the mother of P.' and 'P is the parent of B.'")
+            self.prolog.assertz(f"grandmother({a_p},{b_p})")
+            return "OK! Learned grandmother relation."
+
         return "I don't understand that statement."
 
 
@@ -250,6 +342,63 @@ class PrologFamilyBot:
             parents = sorted({sol['X'] for sol in sols})
             parents_display = ", ".join(p.capitalize() for p in parents)
             return f"Parents of {child}: {parents_display}."
+        
+        # Is A a child of B?
+        m = re.match(r"^Is ([A-Z][a-z]*) a child of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            return "Yes." if list(self.prolog.query(f"child({a_p},{b_p})")) else "No."
+
+        # Is A a daughter of B?
+        m = re.match(r"^Is ([A-Z][a-z]*) a daughter of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            return "Yes." if list(self.prolog.query(f"daughter({a_p},{b_p})")) else "No."
+
+        # Is A a son of B?
+        m = re.match(r"^Is ([A-Z][a-z]*) a son of ([A-Z][a-z]*)$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            return "Yes." if list(self.prolog.query(f"son({a_p},{b_p})")) else "No."
+
+        # Who are the children of X?
+        m = re.match(r"^Who are the children of ([A-Z][a-z]*)$", text)
+        if m:
+            (parent,) = m.groups()
+            p = norm(parent)
+            sols = list(self.prolog.query(f"child(X,{p})"))
+            if not sols:
+                return f"No children of {parent} found."
+            children = sorted({sol['X'] for sol in sols})
+            return f"Children of {parent}: " + ", ".join(c.capitalize() for c in children) + "."
+
+        # Who are the daughters of X?
+        m = re.match(r"^Who are the daughters of ([A-Z][a-z]*)$", text)
+        if m:
+            (parent,) = m.groups()
+            p = norm(parent)
+            sols = list(self.prolog.query(f"daughter(X,{p})"))
+            if not sols:
+                return f"No daughters of {parent} found."
+            daughters = sorted({sol['X'] for sol in sols})
+            return f"Daughters of {parent}: " + ", ".join(d.capitalize() for d in daughters) + "."
+
+        # Who are the sons of X?
+        m = re.match(r"^Who are the sons of ([A-Z][a-z]*)$", text)
+        if m:
+            (parent,) = m.groups()
+            p = norm(parent)
+            sols = list(self.prolog.query(f"son(X,{p})"))
+            if not sols:
+                return f"No sons of {parent} found."
+            sons = sorted({sol['X'] for sol in sols})
+            return f"Sons of {parent}: " + ", ".join(s.capitalize() for s in sons) + "."
 
         # Are A and B siblings?
         m = re.match(r"^Are ([A-Z][a-z]*) and ([A-Z][a-z]*) siblings$", text)
@@ -377,6 +526,43 @@ class PrologFamilyBot:
                 return f"No aunts of {person} found."
             aunts = sorted({sol['X'] for sol in sols})
             return f"Aunts of {person}: " + ", ".join(a.capitalize() for a in aunts) + "."
+
+        # Who are the relatives of X?
+        m = re.match(r"^Who are the relatives of ([A-Z][a-z]*)$", text)
+        if m:
+            (person,) = m.groups()
+            p = norm(person)
+            # gather both directions to cover ancestor/descendant and other cases
+            sols1 = list(self.prolog.query(f"relative({p},Y)"))
+            sols2 = list(self.prolog.query(f"relative(Y,{p})"))
+            relatives = {sol['Y'] for sol in sols1 if sol.get('Y') and sol['Y'] != p}
+            relatives.update({sol['Y'] for sol in sols2 if sol.get('Y') and sol['Y'] != p})
+            if not relatives:
+                return f"No relatives of {person} found."
+            rel_display = ", ".join(r.capitalize() for r in sorted(relatives))
+            return f"Relatives of {person}: {rel_display}."
+        
+        # Who are the grandfathers of X?
+        m = re.match(r"^Who are the grandfathers of ([A-Z][a-z]*)$", text)
+        if m:
+            (person,) = m.groups()
+            p = norm(person)
+            sols = list(self.prolog.query(f"grandfather(X,{p})"))
+            if not sols:
+                return f"No grandfathers of {person} found."
+            gfs = sorted({sol['X'] for sol in sols})
+            return f"Grandfathers of {person}: " + ", ".join(g.capitalize() for g in gfs) + "."
+
+        # Who are the grandmothers of X?
+        m = re.match(r"^Who are the grandmothers of ([A-Z][a-z]*)$", text)
+        if m:
+            (person,) = m.groups()
+            p = norm(person)
+            sols = list(self.prolog.query(f"grandmother(X,{p})"))
+            if not sols:
+                return f"No grandmothers of {person} found."
+            gms = sorted({sol['X'] for sol in sols})
+            return f"Grandmothers of {person}: " + ", ".join(g.capitalize() for g in gms) + "."
 
         return "I don't understand that question."
 
