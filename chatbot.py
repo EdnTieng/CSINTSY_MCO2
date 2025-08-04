@@ -311,7 +311,7 @@ class PrologFamilyBot:
             return f"OK! Learned {gender_word} relation."
         
         # "A, B, and C are children of D."
-        m = re.match(r"^([A-Z][a-z]*(?:, [A-Z][a-z]*)*(?: and [A-Z][a-z]*)?) are children of ([A-Z][a-z]*)$", text)
+        m = re.match(r"^([A-Z][a-z]*(?:, [A-Z][a-z]*)*(?:, and [A-Z][a-z]*)?) are children of ([A-Z][a-z]*)$", text)
         if m:
             children_str, parent = m.groups()
             parent_p = norm(parent)
