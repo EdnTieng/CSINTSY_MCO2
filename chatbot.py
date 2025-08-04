@@ -206,6 +206,50 @@ class PrologFamilyBot:
                         "Ensure the parent and sibling relationships exist.")
             return "OK! Learned aunt relation."
 
+        # "A is a child of B."
+        m = re.match(r"^([A-Z][a-z]*) is a child of ([A-Z][a-z]*)$", text)
+        if m:
+            child, parent = m.groups()
+            c_p = norm(child)
+            p_p = norm(parent)
+            if c_p == p_p:
+                return "Impossible: someone cannot be their own parent."
+            if list(self.prolog.query(f"ancestor({c_p},{p_p})")):
+                return "Impossible: this would create a cycle."
+            self.prolog.assertz(f"parent({p_p},{c_p})")
+            return "OK! Learned child-parent relation."
+
+        # "A is a daughter of B." or "A is a son of B."
+        m = re.match(r"^([A-Z][a-z]*) is a (daughter|son) of ([A-Z][a-z]*)$", text)
+        if m:
+            child, gender_word, parent = m.groups()
+            c_p = norm(child)
+            p_p = norm(parent)
+            gender = 'female' if gender_word == 'daughter' else 'male'
+            ok, err = self._enforce_gender(c_p, gender)
+            if not ok:
+                return err
+            if c_p == p_p:
+                return "Impossible: someone cannot be their own parent."
+            if list(self.prolog.query(f"ancestor({c_p},{p_p})")):
+                return "Impossible: this would create a cycle."
+            self.prolog.assertz(f"parent({p_p},{c_p})")
+            return f"OK! Learned {gender_word} relation."
+        
+        # "A, B, and C are children of D."
+        m = re.match(r"^([A-Z][a-z]*(?:, [A-Z][a-z]*)*(?: and [A-Z][a-z]*)?) are children of ([A-Z][a-z]*)$", text)
+        if m:
+            children_str, parent = m.groups()
+            parent_p = norm(parent)
+            names = [norm(name.strip()) for name in re.split(r", | and ", children_str)]
+            for child_p in names:
+                if child_p == parent_p:
+                    return "Impossible: someone cannot be their own parent."
+                if list(self.prolog.query(f"ancestor({child_p},{parent_p})")):
+                    return "Impossible: this would create a cycle."
+                self.prolog.assertz(f"parent({parent_p},{child_p})")
+            return "OK! Learned children-parent relations."
+
         return "I don't understand that statement."
 
 
@@ -377,6 +421,91 @@ class PrologFamilyBot:
                 return f"No aunts of {person} found."
             aunts = sorted({sol['X'] for sol in sols})
             return f"Aunts of {person}: " + ", ".join(a.capitalize() for a in aunts) + "."
+
+        # Is A a daughter/son/child of B?
+        m = re.match(r"^Is ([A-Z][a-z]*) a (daughter|son|child) of ([A-Z][a-z]*)$", text)
+        if m:
+            child, role, parent = m.groups()
+            c_p = norm(child)
+            p_p = norm(parent)
+            if role == 'child':
+                return "Yes." if list(self.prolog.query(f"parent({p_p},{c_p})")) else "No."
+            gender = 'female' if role == 'daughter' else 'male'
+            gender_match = self.gender.get(c_p) == gender or bool(list(self.prolog.query(f"{gender}({c_p})")))
+            return "Yes." if gender_match and list(self.prolog.query(f"parent({p_p},{c_p})")) else "No."
+
+        # Who are the daughters/sons/children of A?
+        m = re.match(r"^Who are the (daughters|sons|children) of ([A-Z][a-z]*)$", text)
+        if m:
+            role, parent = m.groups()
+            p_p = norm(parent)
+            kids = list(self.prolog.query(f"parent({p_p},X)"))
+            if not kids:
+                return f"No {role} of {parent} found."
+            children = []
+            for kid in kids:
+                child = kid['X']
+                if role == 'children':
+                    children.append(child)
+                elif role == 'daughters' and (self.gender.get(child) == 'female' or bool(list(self.prolog.query(f"female({child})")))):
+                    children.append(child)
+                elif role == 'sons' and (self.gender.get(child) == 'male' or bool(list(self.prolog.query(f"male({child})")))):
+                    children.append(child)
+            if not children:
+                return f"No {role} of {parent} found."
+            return f"{role.capitalize()} of {parent}: " + ", ".join(c.capitalize() for c in sorted(children)) + "."
+
+        # Are A, B, and C children of D?
+        m = re.match(r"^Are ([A-Z][a-z]*(?:, [A-Z][a-z]*)*(?: and [A-Z][a-z]*)?) children of ([A-Z][a-z]*)$", text)
+        if m:
+            children_str, parent = m.groups()
+            parent_p = norm(parent)
+            names = [norm(name.strip()) for name in re.split(r", | and ", children_str)]
+            for child_p in names:
+                if not list(self.prolog.query(f"parent({parent_p},{child_p})")):
+                    return "No."
+            return "Yes."
+
+        # Are A and B the parents of C?
+        m = re.match(r"^Are ([A-Z][a-z]*) and ([A-Z][a-z]*) the parents of ([A-Z][a-z]*)$", text)
+        if m:
+            p1, p2, child = m.groups()
+            p1_p = norm(p1)
+            p2_p = norm(p2)
+            c_p = norm(child)
+            if list(self.prolog.query(f"parent({p1_p},{c_p})")) and list(self.prolog.query(f"parent({p2_p},{c_p})")):
+                return "Yes."
+            return "No."
+
+        # Who is the father/mother of A?
+        m = re.match(r"^Who is the (father|mother) of ([A-Z][a-z]*)$", text)
+        if m:
+            role, child = m.groups()
+            child_p = norm(child)
+            if role == 'father':
+                sols = list(self.prolog.query(f"father(X,{child_p})"))
+            else:
+                sols = list(self.prolog.query(f"mother(X,{child_p})"))
+            if not sols:
+                return f"No {role} of {child} found."
+            parent = sols[0]['X']
+            return f"{role.capitalize()} of {child}: {parent.capitalize()}."
+        
+        # Are A and B relatives?
+        # This checks if they share any ancestor, parent, or sibling relationship
+        m = re.match(r"^Are ([A-Z][a-z]*) and ([A-Z][a-z]*) relatives$", text)
+        if m:
+            a, b = m.groups()
+            a_p = norm(a)
+            b_p = norm(b)
+            # check shared ancestor
+            for rel in ['ancestor', 'parent', 'sibling']:
+                if list(self.prolog.query(f"{rel}(X,{a_p}), {rel}(X,{b_p})")) or \
+                list(self.prolog.query(f"{rel}({a_p},{b_p})")) or \
+                list(self.prolog.query(f"{rel}({b_p},{a_p})")):
+                    return "Yes."
+            return "No."
+
 
         return "I don't understand that question."
 
